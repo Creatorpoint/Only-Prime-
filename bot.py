@@ -1,194 +1,240 @@
 import telebot
 import json
+import random
 import schedule
 import time
 import threading
-from telebot.types import ReplyKeyboardMarkup
-from config import TOKEN, ADMIN_ID
+import openai
+from telebot.types import InlineKeyboardMarkup,InlineKeyboardButton
+from config import TOKEN,ADMIN_ID,OPENAI_KEY,BOT_USERNAME
 
-bot = telebot.TeleBot(TOKEN)
+bot=telebot.TeleBot(TOKEN)
+openai.api_key=OPENAI_KEY
 
 # DATABASE
 def load_db():
     with open("database.json") as f:
         return json.load(f)
 
-def save_db(data):
+def save_db(d):
     with open("database.json","w") as f:
-        json.dump(data,f)
-
-# MENU
-def menu():
-    m = ReplyKeyboardMarkup(resize_keyboard=True)
-    m.row("📢 Broadcast","📊 Stats")
-    m.row("👥 Groups","🚫 Block User")
-    m.row("⏰ Schedule","❓ Help")
-    return m
+        json.dump(d,f)
 
 # START
 @bot.message_handler(commands=['start'])
-def start(msg):
+def start(m):
 
-    db = load_db()
+    db=load_db()
+    uid=m.from_user.id
 
-    if msg.from_user.id not in db["users"]:
-        db["users"].append(msg.from_user.id)
+    if uid not in db["users"]:
+        db["users"].append(uid)
+        db["balance"][str(uid)]=0
         save_db(db)
 
-    bot.send_message(
-        msg.chat.id,
-        "👋 Welcome Professional Broadcast Bot 🚀",
-        reply_markup=menu()
-    )
+    bot.send_message(m.chat.id,"👋 Welcome to AI Pro Bot 🤖")
 
-# HELP
-@bot.message_handler(func=lambda m: m.text=="❓ Help")
-def help(msg):
+# ADMIN PANEL
+@bot.message_handler(commands=['admin'])
+def admin(m):
 
-    bot.send_message(msg.chat.id,
-"""
-🤖 BOT COMMANDS
-
-/start
-/addgroup
-/broadcast
-/stats
-/block id
-/unblock id
-""")
-
-# STATS
-@bot.message_handler(func=lambda m: m.text=="📊 Stats")
-def stats(msg):
-
-    if msg.from_user.id != ADMIN_ID:
+    if m.from_user.id!=ADMIN_ID:
         return
 
-    db = load_db()
+    k=InlineKeyboardMarkup()
 
-    bot.send_message(msg.chat.id,
-f"""
-📊 BOT STATS
+    k.add(
+    InlineKeyboardButton("📊 Dashboard",callback_data="dash"),
+    InlineKeyboardButton("📢 Broadcast",callback_data="bc")
+    )
+
+    k.add(
+    InlineKeyboardButton("👥 Groups",callback_data="groups"),
+    InlineKeyboardButton("🚫 Block",callback_data="block")
+    )
+
+    k.add(
+    InlineKeyboardButton("💰 Join Earn",callback_data="earn"),
+    InlineKeyboardButton("⏰ Schedule",callback_data="schedule")
+    )
+
+    bot.send_message(m.chat.id,"👑 Admin Panel",reply_markup=k)
+
+# DASHBOARD
+@bot.callback_query_handler(func=lambda call:call.data=="dash")
+def dash(call):
+
+    db=load_db()
+
+    bot.edit_message_text(
+    f"""📊 DASHBOARD
 
 👤 Users : {len(db['users'])}
 👥 Groups : {len(db['groups'])}
 🚫 Blocked : {len(db['blocked'])}
-""")
-
-# ADD GROUP
-@bot.message_handler(commands=['addgroup'])
-def addgroup(msg):
-
-    if msg.chat.type in ["group","supergroup"]:
-
-        db = load_db()
-
-        if msg.chat.id not in db["groups"]:
-            db["groups"].append(msg.chat.id)
-            save_db(db)
-
-            bot.send_message(msg.chat.id,"✅ Group Linked")
+""",
+    call.message.chat.id,
+    call.message.message_id
+    )
 
 # BROADCAST
-@bot.message_handler(func=lambda m: m.text=="📢 Broadcast")
-def ask_broadcast(msg):
+@bot.message_handler(commands=['broadcast'])
+def broadcast(m):
 
-    if msg.from_user.id != ADMIN_ID:
+    if m.from_user.id!=ADMIN_ID:
         return
 
-    bot.send_message(msg.chat.id,"Send message for broadcast")
+    bot.send_message(m.chat.id,"Send broadcast message")
 
-    bot.register_next_step_handler(msg, send_broadcast)
+    bot.register_next_step_handler(m,send_bc)
 
-def send_broadcast(msg):
+def send_bc(m):
 
-    db = load_db()
+    db=load_db()
 
-    success=0
+    sent=0
 
     for u in db["users"]:
+
+        if u in db["blocked"]:
+            continue
+
         try:
-            bot.send_message(u,msg.text)
-            success+=1
+            bot.send_message(u,m.text)
+            sent+=1
         except:
             pass
 
     for g in db["groups"]:
         try:
-            bot.send_message(g,msg.text)
-            success+=1
+            bot.send_message(g,m.text)
+            sent+=1
         except:
             pass
 
-    bot.send_message(msg.chat.id,f"✅ Broadcast Done\nSent : {success}")
+    bot.send_message(m.chat.id,f"✅ Broadcast sent: {sent}")
 
-# BLOCK USER
+# ADD GROUP
+@bot.message_handler(commands=['addgroup'])
+def addgroup(m):
+
+    if m.from_user.id!=ADMIN_ID:
+        return
+
+    gid=int(m.text.split()[1])
+
+    db=load_db()
+
+    if gid not in db["groups"]:
+        db["groups"].append(gid)
+        save_db(db)
+
+    bot.send_message(m.chat.id,"✅ Group added")
+
+# BLOCK
 @bot.message_handler(commands=['block'])
-def block(msg):
+def block(m):
 
-    if msg.from_user.id != ADMIN_ID:
+    if m.from_user.id!=ADMIN_ID:
         return
 
-    uid=int(msg.text.split()[1])
+    uid=int(m.text.split()[1])
 
     db=load_db()
 
-    db["blocked"].append(uid)
+    if uid not in db["blocked"]:
+        db["blocked"].append(uid)
+        save_db(db)
 
-    save_db(db)
+    bot.send_message(m.chat.id,"🚫 User blocked")
 
-    bot.send_message(msg.chat.id,"🚫 User Blocked")
-
-# UNBLOCK
-@bot.message_handler(commands=['unblock'])
-def unblock(msg):
-
-    if msg.from_user.id != ADMIN_ID:
-        return
-
-    uid=int(msg.text.split()[1])
+# JOIN TO EARN
+@bot.message_handler(commands=['balance'])
+def balance(m):
 
     db=load_db()
 
-    db["blocked"].remove(uid)
+    uid=str(m.from_user.id)
 
-    save_db(db)
+    bal=db["balance"].get(uid,0)
 
-    bot.send_message(msg.chat.id,"✅ User Unblocked")
+    bot.send_message(m.chat.id,f"💰 Balance : {bal}")
 
-# SCHEDULE
-def scheduled_job(text):
+# SCHEDULE BROADCAST
+schedule_text=None
 
-    db = load_db()
+@bot.message_handler(commands=['schedule'])
+def schedule_cmd(m):
+
+    if m.from_user.id!=ADMIN_ID:
+        return
+
+    bot.send_message(m.chat.id,"Send time HH:MM")
+
+    bot.register_next_step_handler(m,set_time)
+
+def set_time(m):
+
+    global sched_time
+    sched_time=m.text
+
+    bot.send_message(m.chat.id,"Send message")
+
+    bot.register_next_step_handler(m,set_msg)
+
+def set_msg(m):
+
+    global schedule_text
+    schedule_text=m.text
+
+    schedule.every().day.at(sched_time).do(run_schedule)
+
+    bot.send_message(m.chat.id,"⏰ Scheduled broadcast set")
+
+def run_schedule():
+
+    db=load_db()
 
     for u in db["users"]:
         try:
-            bot.send_message(u,text)
+            bot.send_message(u,schedule_text)
         except:
             pass
 
-@bot.message_handler(func=lambda m: m.text=="⏰ Schedule")
-def schedule_msg(msg):
+# AI CHAT
+@bot.message_handler(func=lambda m:m.chat.type in ["group","supergroup"])
+def ai_chat(m):
 
-    if msg.from_user.id != ADMIN_ID:
+    if not m.text:
         return
 
-    bot.send_message(msg.chat.id,"Send message to schedule")
+    if BOT_USERNAME not in m.text and "bot" not in m.text.lower():
+        return
 
-    bot.register_next_step_handler(msg,set_schedule)
+    try:
 
-def set_schedule(msg):
+        response=openai.ChatCompletion.create(
+        model="gpt-4o-mini",
+        messages=[
+        {"role":"system","content":"You are a funny helpful Telegram group assistant who answers questions like a human."},
+        {"role":"user","content":m.text}
+        ]
+        )
 
-    schedule.every(1).minutes.do(scheduled_job,msg.text)
+        reply=response["choices"][0]["message"]["content"]
 
-    bot.send_message(msg.chat.id,"⏰ Message scheduled every 1 minute")
+        bot.reply_to(m,reply)
+
+    except:
+        bot.reply_to(m,"😅 AI busy right now")
 
 # SCHEDULER THREAD
-def run_schedule():
+def scheduler():
+
     while True:
         schedule.run_pending()
         time.sleep(1)
 
-threading.Thread(target=run_schedule).start()
+threading.Thread(target=scheduler).start()
 
 bot.infinity_polling()
