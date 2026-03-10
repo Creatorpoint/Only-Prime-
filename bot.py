@@ -1,15 +1,17 @@
 import telebot
 import json
 import random
+import openai
+import threading
 import schedule
 import time
-import threading
-import openai
-from telebot.types import InlineKeyboardMarkup,InlineKeyboardButton
-from config import TOKEN,ADMIN_ID,OPENAI_KEY,BOT_USERNAME
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from config import TOKEN, ADMIN_ID, OPENAI_KEY, BOT_USERNAME
 
-bot=telebot.TeleBot(TOKEN)
-openai.api_key=OPENAI_KEY
+bot = telebot.TeleBot(TOKEN)
+openai.api_key = OPENAI_KEY
+
+selected_groups = {}
 
 # DATABASE
 
@@ -26,120 +28,27 @@ def save_db(d):
 @bot.message_handler(commands=['start'])
 def start(m):
 
-    db=load_db()
-    uid=m.from_user.id
+    db = load_db()
+    uid = m.from_user.id
 
     if uid not in db["users"]:
         db["users"].append(uid)
-        db["memory"][str(uid)]=[]
+        db["memory"][str(uid)] = []
         save_db(db)
 
-    bot.send_message(m.chat.id,"👋 Hello I'm Smart AI Bot 🤖")
-
-# ADMIN PANEL
-
-@bot.message_handler(commands=['admin'])
-def admin(m):
-
-    if m.from_user.id!=ADMIN_ID:
-        return
-
-    k=InlineKeyboardMarkup()
-
-    k.add(
-    InlineKeyboardButton("📊 Analytics",callback_data="stats"),
-    InlineKeyboardButton("📢 Broadcast",callback_data="bc")
-    )
-
-    k.add(
-    InlineKeyboardButton("👥 Groups",callback_data="groups"),
-    InlineKeyboardButton("🚫 Block",callback_data="block")
-    )
-
-    bot.send_message(m.chat.id,"👑 Admin Panel",reply_markup=k)
-
-# ANALYTICS
-
-@bot.callback_query_handler(func=lambda c:c.data=="stats")
-def stats(c):
-
-    db=load_db()
-
-    text=f"""
-📊 BOT ANALYTICS
-
-👤 Users : {len(db['users'])}
-👥 Groups : {len(db['groups'])}
-🚫 Blocked : {len(db['blocked'])}
-"""
-
-    bot.edit_message_text(text,c.message.chat.id,c.message.message_id)
-
-# BROADCAST ENGINE
-
-@bot.message_handler(commands=['broadcast'])
-def bc(m):
-
-    if m.from_user.id!=ADMIN_ID:
-        return
-
-    msg=bot.send_message(m.chat.id,"Send message/photo/video")
-
-    bot.register_next_step_handler(msg,process_bc)
-
-def process_bc(message):
-
-    db=load_db()
-    sent=0
-
-    targets=db["users"]+db["groups"]
-
-    for t in targets:
-
-        try:
-
-            if message.text:
-                bot.send_message(t,message.text)
-
-            elif message.photo:
-                bot.send_photo(t,message.photo[-1].file_id,caption=message.caption)
-
-            elif message.video:
-                bot.send_video(t,message.video.file_id,caption=message.caption)
-
-            sent+=1
-
-        except:
-            pass
-
-    bot.send_message(message.chat.id,f"✅ Broadcast Sent {sent}")
-
-# BUTTON BROADCAST
-
-def button_broadcast(text,btn,link):
-
-    db=load_db()
-
-    k=InlineKeyboardMarkup()
-    k.add(InlineKeyboardButton(btn,url=link))
-
-    for u in db["users"]:
-        try:
-            bot.send_message(u,text,reply_markup=k)
-        except:
-            pass
+    bot.send_message(m.chat.id,"🤖 AI Bot Activated")
 
 # ADD GROUP
 
 @bot.message_handler(commands=['addgroup'])
-def addg(m):
+def add_group(m):
 
-    if m.from_user.id!=ADMIN_ID:
+    if m.from_user.id != ADMIN_ID:
         return
 
-    gid=int(m.text.split()[1])
+    gid = int(m.text.split()[1])
 
-    db=load_db()
+    db = load_db()
 
     if gid not in db["groups"]:
         db["groups"].append(gid)
@@ -147,102 +56,156 @@ def addg(m):
 
     bot.send_message(m.chat.id,"✅ Group Added")
 
-# FUNNY MEME REPLIES
+# ADMIN ANALYTICS
 
-memes=[
-"😂 Bro that's illegal!",
-"🤣 Developer life be like",
-"💀 RIP logic",
-"😂 That escalated quickly"
-]
+@bot.message_handler(commands=['admin'])
+def admin(m):
 
-# AI CHAT + MEMORY
-
-@bot.message_handler(func=lambda m:m.chat.type in ["group","supergroup"])
-def ai_chat(m):
-
-    if not m.text:
+    if m.from_user.id != ADMIN_ID:
         return
 
-    db=load_db()
+    db = load_db()
 
-    uid=str(m.from_user.id)
+    text = f"""
+📊 BOT ANALYTICS
 
-    if uid not in db["memory"]:
-        db["memory"][uid]=[]
+Users : {len(db['users'])}
+Groups : {len(db['groups'])}
+Blocked : {len(db['blocked'])}
+"""
 
-    db["memory"][uid].append(m.text)
+    bot.send_message(m.chat.id,text)
 
-    save_db(db)
+# GROUP SELECT BROADCAST
 
-    if BOT_USERNAME not in m.text and "bot" not in m.text.lower():
-        if random.randint(1,20)==5:
-            bot.reply_to(m,random.choice(memes))
+@bot.message_handler(commands=['broadcast'])
+def broadcast(m):
+
+    if m.from_user.id != ADMIN_ID:
+        return
+
+    db = load_db()
+
+    k = InlineKeyboardMarkup()
+
+    for g in db["groups"]:
+        k.add(InlineKeyboardButton(f"Group {g}",callback_data=f"bc_{g}"))
+
+    bot.send_message(m.chat.id,"👥 Select group",reply_markup=k)
+
+# GROUP CLICK
+
+@bot.callback_query_handler(func=lambda c:c.data.startswith("bc_"))
+def select_group(c):
+
+    gid = int(c.data.split("_")[1])
+
+    selected_groups[c.from_user.id] = gid
+
+    msg = bot.send_message(c.message.chat.id,"Send broadcast content")
+
+    bot.register_next_step_handler(msg,send_selected)
+
+# SEND BROADCAST
+
+def send_selected(message):
+
+    gid = selected_groups.get(message.from_user.id)
+
+    if not gid:
         return
 
     try:
 
-        history=db["memory"][uid][-5:]
+        if message.text:
+            bot.send_message(gid,message.text)
 
-        messages=[{"role":"system","content":"You are a funny helpful Telegram group assistant."}]
+        elif message.photo:
+            bot.send_photo(gid,message.photo[-1].file_id,caption=message.caption)
 
-        for h in history:
-            messages.append({"role":"user","content":h})
+        elif message.video:
+            bot.send_video(gid,message.video.file_id,caption=message.caption)
 
-        response=openai.ChatCompletion.create(
-        model="gpt-4o-mini",
-        messages=messages
-        )
-
-        reply=response["choices"][0]["message"]["content"]
-
-        bot.reply_to(m,reply)
+        bot.send_message(message.chat.id,"✅ Broadcast sent")
 
     except:
-        bot.reply_to(m,"🤖 Thinking...")
+        bot.send_message(message.chat.id,"❌ Failed")
 
-# AUTO TALKING AI
+# AI CHAT
+
+@bot.message_handler(func=lambda m: True)
+def ai_chat(message):
+
+    if not message.text:
+        return
+
+    db = load_db()
+    uid = str(message.from_user.id)
+
+    if uid not in db["memory"]:
+        db["memory"][uid] = []
+
+    db["memory"][uid].append(message.text)
+
+    save_db(db)
+
+    trigger = BOT_USERNAME.lower() in message.text.lower() or "bot" in message.text.lower()
+
+    if not trigger:
+        return
+
+    try:
+
+        history = db["memory"][uid][-5:]
+
+        msgs = [{"role":"system","content":"You are a funny helpful assistant"}]
+
+        for h in history:
+            msgs.append({"role":"user","content":h})
+
+        response = openai.ChatCompletion.create(
+            model="gpt-4o-mini",
+            messages=msgs
+        )
+
+        reply = response["choices"][0]["message"]["content"]
+
+        bot.reply_to(message,reply)
+
+    except:
+
+        jokes = [
+        "😂 Thinking...",
+        "🤖 Brain loading",
+        "🤣 Try again"
+        ]
+
+        bot.reply_to(message,random.choice(jokes))
+
+# AUTO GROUP ENGAGEMENT
 
 def auto_chat():
 
-    db=load_db()
+    db = load_db()
 
-    msgs=[
+    msgs = [
     "👀 Anyone online?",
-    "😂 Drop your best meme",
-    "🤖 Ask me anything!",
-    "🔥 Who is active?"
+    "😂 Drop meme",
+    "🔥 Who is active?",
+    "🤖 Ask me anything"
     ]
 
     for g in db["groups"]:
-
         try:
             bot.send_message(g,random.choice(msgs))
         except:
             pass
 
-schedule.every(30).minutes.do(auto_chat)
-
-# SCHEDULE BROADCAST
-
-def schedule_msg(text,time_set):
-
-    db=load_db()
-
-    def job():
-
-        for g in db["groups"]:
-            try:
-                bot.send_message(g,text)
-            except:
-                pass
-
-    schedule.every().day.at(time_set).do(job)
+schedule.every(25).minutes.do(auto_chat)
 
 # SCHEDULER
 
 def scheduler():
-
     while True:
         schedule.run_pending()
         time.sleep(1)
