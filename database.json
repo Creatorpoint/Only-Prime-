@@ -1,6 +1,6 @@
 {
  "users": [],
  "groups": [],
- "channels": [],
- "blocked": []
+ "blocked": [],
+ "balance": {}
 }
