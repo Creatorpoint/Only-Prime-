@@ -1,17 +1,11 @@
 import telebot
 import json
-import threading
-from flask import Flask
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 from config import TOKEN, ADMIN_ID
 
 bot = telebot.TeleBot(TOKEN)
 
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Bot Running"
-
+# DATABASE
 def load_db():
     with open("database.json") as f:
         return json.load(f)
@@ -20,6 +14,14 @@ def save_db(data):
     with open("database.json","w") as f:
         json.dump(data,f)
 
+# MENU BUTTONS
+def menu():
+    markup = ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row("📢 Broadcast","📊 Stats")
+    markup.row("👥 Groups","❓ Help")
+    return markup
+
+# START
 @bot.message_handler(commands=['start'])
 def start(msg):
 
@@ -29,22 +31,28 @@ def start(msg):
         db["users"].append(msg.from_user.id)
         save_db(db)
 
-    bot.send_message(msg.chat.id,"👋 Welcome Broadcast Bot 🚀")
+    bot.send_message(
+        msg.chat.id,
+        "👋 Welcome Broadcast Bot 🚀",
+        reply_markup=menu()
+    )
 
-@bot.message_handler(commands=['addgroup'])
-def addgroup(msg):
+# HELP
+@bot.message_handler(func=lambda m: m.text=="❓ Help")
+def help(msg):
 
-    if msg.chat.type in ["group","supergroup"]:
+    bot.send_message(msg.chat.id,
+"""
+🤖 BOT COMMANDS
 
-        db = load_db()
+/start
+/broadcast message
+/addgroup
+/stats
+""")
 
-        if msg.chat.id not in db["groups"]:
-            db["groups"].append(msg.chat.id)
-            save_db(db)
-
-            bot.send_message(msg.chat.id,"✅ Group Added")
-
-@bot.message_handler(commands=['stats'])
+# STATS
+@bot.message_handler(func=lambda m: m.text=="📊 Stats")
 def stats(msg):
 
     if msg.from_user.id != ADMIN_ID:
@@ -58,37 +66,53 @@ f"""
 
 👤 Users : {len(db['users'])}
 👥 Groups : {len(db['groups'])}
-📡 Channels : {len(db['channels'])}
 """)
 
-@bot.message_handler(commands=['broadcast'])
-def broadcast(msg):
+# ADD GROUP
+@bot.message_handler(commands=['addgroup'])
+def addgroup(msg):
+
+    if msg.chat.type in ["group","supergroup"]:
+
+        db = load_db()
+
+        if msg.chat.id not in db["groups"]:
+            db["groups"].append(msg.chat.id)
+            save_db(db)
+
+            bot.send_message(msg.chat.id,"✅ Group Added")
+
+# BROADCAST BUTTON
+@bot.message_handler(func=lambda m: m.text=="📢 Broadcast")
+def ask_broadcast(msg):
 
     if msg.from_user.id != ADMIN_ID:
         return
 
-    text = msg.text.replace("/broadcast ","")
+    bot.send_message(msg.chat.id,"Send message for broadcast")
+
+    bot.register_next_step_handler(msg, send_broadcast)
+
+def send_broadcast(msg):
 
     db = load_db()
 
-    for u in db["users"]:
+    success = 0
+
+    for user in db["users"]:
         try:
-            bot.send_message(u,text)
+            bot.send_message(user,msg.text)
+            success+=1
         except:
             pass
 
-    for g in db["groups"]:
+    for group in db["groups"]:
         try:
-            bot.send_message(g,text)
+            bot.send_message(group,msg.text)
+            success+=1
         except:
             pass
 
-    bot.send_message(msg.chat.id,"✅ Broadcast Sent")
+    bot.send_message(msg.chat.id,f"✅ Broadcast Done\nSent : {success}")
 
-def run_bot():
-    bot.infinity_polling()
-
-threading.Thread(target=run_bot).start()
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+bot.infinity_polling()
